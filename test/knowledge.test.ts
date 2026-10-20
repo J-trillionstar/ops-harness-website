@@ -92,7 +92,6 @@ test('knowledge entries are created, edited and removed under revision control a
   const id = created.entry.id
   assert.equal((await json('/api/admin/knowledge', { entry: entry({ id, tenant_id: 'tenant-other' }), revision: created.revision })).status, 409)
   assert.equal((await (await json('/api/admin/knowledge', { entry: entry({ id, tenant_id: 'tenant-other' }), revision: created.revision })).json()).error, 'KNOWLEDGE_ID_TAKEN')
-  assert.equal((await (await json('/api/admin/knowledge', { entry: entry({ id: 'metrics-second' }), revision: created.revision })).json()).error, 'TENANT_ID_TAKEN')
   for (const invalid of [entry({ id: 'Metrics-Bad' }), entry({ id: 'wrong-prefix' }), entry({ tenant_name: '' }), entry({ enabled: 'yes' }),
     entry({ knowledge_base_meta: { knowledge_description: '描述', typical_indicators: Array.from({ length: maxTypicalIndicators + 1 }, (_, i) => `指标${i}`) } }),
     entry({ knowledge_retrieve_workflow_id: { '': 'value' } }), entry({ extra: true })]) {
@@ -646,4 +645,44 @@ test('stored annotations that do not name a method are dropped on read; the cata
   const damaged = structuredClone(valid); damaged.items[0].data_query_workflows = 'query_card_data'
   await writeFile(catalogPath, JSON.stringify(damaged))
   await assert.rejects(new KnowledgeStore(content).list(), { code: 'CONTENT_UNAVAILABLE', status: 503 })
+})
+
+
+test('same-tenant libraries persist independently while the v1 projection stays tenant-unique', async t => {
+  const { json, read, origin, content } = await fixture(t)
+  let revision = (await read()).revision
+  const create = async (id: string, extra: Record<string, unknown> = {}) => {
+    const response = await json('/api/admin/knowledge', { entry: entry({ id, ...extra }), revision })
+    assert.equal(response.status, 200)
+    revision = (await response.json()).revision
+  }
+  await create('metrics-first')
+  const stale = revision
+  await create('metrics-second', { knowledge_retrieve_workflow_id: { get_card_index: 'wf-second', get_card_meta: 'meta-second', query_card_data: 'data-second' } })
+  await create('metrics-third', { tenant_id: 'tenant-other' })
+  const changed = await json('/api/admin/knowledge/metrics-third', { entry: entry({ tenant_id: ' tenant-retail ' }), revision }, 'PUT')
+  assert.equal(changed.status, 200)
+  revision = (await changed.json()).revision
+  const reread = await new KnowledgeStore(content).list()
+  assert.equal(reread.revision, revision)
+  assert.deepEqual(reread.items.map(item => item.tenant_id), ['tenant-retail', 'tenant-retail', 'tenant-retail'])
+  const v2 = await (await fetch(origin + '/api/knowledge/metrics/v2')).json()
+  assert.deepEqual(v2.items.map((item: { id: string }) => item.id), ['metrics-first', 'metrics-second', 'metrics-third'])
+  assert.equal(v2.items[1].knowledge_retrieve_workflow_id.get_card_index, 'wf-second')
+  const legacy = await (await fetch(origin + '/api/knowledge/metrics')).json()
+  assert.deepEqual(legacy.items.map((item: { id: string }) => item.id), ['metrics-first'])
+  assert.equal((await json('/api/admin/knowledge/metrics-second', { revision: stale }, 'DELETE')).status, 409)
+  const removed = await json('/api/admin/knowledge/metrics-first', { revision }, 'DELETE')
+  assert.equal(removed.status, 200)
+  revision = (await removed.json()).revision
+  const remaining = await new KnowledgeStore(content).list()
+  assert.deepEqual(remaining.items.map(item => item.id), ['metrics-second', 'metrics-third'])
+  assert.equal(remaining.items[0]!.knowledge_retrieve_workflow_id.get_card_index, 'wf-second')
+  const next = await (await fetch(origin + '/api/knowledge/metrics')).json()
+  assert.deepEqual(next.items.map((item: { id: string }) => item.id), ['metrics-second'])
+  assert.equal(next.items[0].knowledge_retrieve_workflow_id.get_card_index, 'wf-second')
+  const disabled = await json('/api/admin/knowledge/metrics-second', { entry: entry({ enabled: false }), revision }, 'PUT')
+  assert.equal(disabled.status, 200)
+  const afterDisable = await (await fetch(origin + '/api/knowledge/metrics')).json()
+  assert.deepEqual(afterDisable.items.map((item: { id: string }) => item.id), ['metrics-third'])
 })

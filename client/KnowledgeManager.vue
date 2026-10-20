@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import type { MetricKnowledgeCatalog, MetricKnowledgeEntry, MetricKnowledgeSkill } from '../shared/knowledge'
-import { legacyDataQueryWorkflow, maxKnowledgeSkills, maxKnowledgeWorkflows, maxSkillFileBytes, maxTypicalIndicators, maxWorkflowName, maxWorkflowValue, metricKnowledgeIdPattern, validWorkflowName, legacyKnowledgeCompatible } from '../shared/knowledge'
+import { legacyDataQueryWorkflow, maxKnowledgeSkills, maxKnowledgeWorkflows, maxSkillFileBytes, maxTypicalIndicators, maxWorkflowName, maxWorkflowValue, metricKnowledgeIdPattern, validWorkflowName, legacyKnowledgeCompatible, legacyKnowledgeEntries } from '../shared/knowledge'
 import { ApiError, guideApi, requestMessage, uploadFile } from './guide-api'
 import WebsiteDialog from './WebsiteDialog.vue'
 
@@ -36,6 +36,7 @@ const uploadResults = ref<UploadResult[]>([]), uploadIndex = ref(0), uploadTotal
 const confirmation = ref<{ title: string; message: string; label?: string; action: () => void }>()
 const lifetime = new AbortController()
 let upload: AbortController | undefined
+const legacyEntries = computed(() => new Set(legacyKnowledgeEntries(items.value, legacySkillName.value).map(item => item.id)))
 const active = computed(() => Boolean(current.value || creating.value))
 const dirty = computed(() => active.value && JSON.stringify(form.value) !== baseline.value)
 watch(dirty, v => emit('dirty', v)); watch(busy, v => emit('busy', v))
@@ -138,8 +139,8 @@ async function save() {
   const names = new Set<string>()
   for (const row of form.value.workflows) {
     const name = row.name.trim(), value = row.value.trim()
-    if (!name || !value) return validationError('每项工作流的名称和值都必须填写；不需要的工作流请移除。', row)
-    if (name.length > maxWorkflowName || value.length > maxWorkflowValue) return validationError(`工作流名称最多 ${maxWorkflowName} 字，值最多 ${maxWorkflowValue} 字。`, row)
+    if (!name || !value) return validationError('每项工作流的名称和ID都必须填写；不需要的工作流请移除。', row)
+    if (name.length > maxWorkflowName || value.length > maxWorkflowValue) return validationError(`工作流名称最多 ${maxWorkflowName} 字，工作流ID最多 ${maxWorkflowValue} 字。`, row)
     if (!validWorkflowName(name) && !Object.hasOwn(current.value?.knowledge_retrieve_workflow_id ?? {}, name)) return validationError('新增或改名的工作流名称只允许 1–64 位字母、数字、下划线或连字符，且不能使用 run_code 等保留名称。', row)
     if (names.has(name)) return validationError(`工作流名称“${name}”重复，请修改名称或移除重复项。`, row)
     names.add(name)
@@ -218,7 +219,9 @@ function detach(value: MetricKnowledgeSkill) {
 function compatibility(entry: MetricKnowledgeEntry) {
   if (entry.pending_skill_names?.length) return '待选择单个技能'
   if (legacySkillName.value === undefined) return '待确认原公共技能'
-  return legacyKnowledgeCompatible(entry, legacySkillName.value) ? '支持旧客户端' : '仅新版客户端'
+  if (!legacyKnowledgeCompatible(entry, legacySkillName.value)) return '仅新版客户端'
+  if (entry.enabled && !legacyEntries.value.has(entry.id)) return '仅新版客户端（同租户多库）'
+  return '支持旧客户端'
 }
 const invalidHistoricalNames = computed(() => form.value.workflows.filter(row => !validWorkflowName(row.name.trim())).map(row => row.name))
 const conflictingAlias = computed(() => {
@@ -300,7 +303,7 @@ onBeforeUnmount(() => { lifetime.abort(); upload?.abort(); emit('dirty', false);
             <div class="chapter-fields">
               <label v-if="creating">知识库标识<input v-model="form.id" maxlength="64" placeholder="留空自动生成，例如 metrics-retail" /><small>以 metrics- 开头，只用小写字母、数字和连字符；创建后不可修改。</small></label>
               <label>租户名称<input ref="tenantInput" v-model="form.tenant_name" required maxlength="80" placeholder="例如：示例零售" /></label>
-              <label>租户 ID<input v-model="form.tenant_id" required maxlength="128" placeholder="DataAgent 中的租户标识" /><small>同一目录内唯一。</small></label>
+              <label>租户 ID<input v-model="form.tenant_id" required maxlength="128" placeholder="DataAgent 中的租户标识" /><small>同一租户可配置多个知识库。</small></label>
               <label>知识库 card_index_knowledge_base<input v-model="form.card_index_knowledge_base" required maxlength="256" /></label>
               <label>知识库 card_meta_knowledge_base<input v-model="form.card_meta_knowledge_base" required maxlength="256" /></label>
               <label>指标覆盖<input v-model="form.indicators_cover" maxlength="80" placeholder="例如：1,200 项，可留空" /></label>
@@ -309,13 +312,13 @@ onBeforeUnmount(() => { lifetime.abort(); upload?.abort(); emit('dirty', false);
             </div>
             <section class="knowledge-field-section" aria-labelledby="knowledge-workflows-heading">
               <div class="knowledge-field-heading"><h4 id="knowledge-workflows-heading">检索工作流</h4><span>{{ form.workflows.length }} / {{ maxKnowledgeWorkflows }}</span></div>
-              <p id="knowledge-workflows-help" class="editor-help">按名称和值成对填写。名称对应客户端方法，使用 1–64 位字母、数字、下划线或连字符且不能重复，值填写对应的工作流 ID；不需要的项目可移除，也可不配置工作流。</p>
+              <p id="knowledge-workflows-help" class="editor-help">按工作流名称和工作流ID成对填写。工作流名称对应客户端方法，使用 1–64 位字母、数字、下划线或连字符且不能重复；工作流ID填写该方法对应的工作流标识。不需要的项目可移除，也可不配置工作流。</p>
               <p id="knowledge-data-query-help" class="editor-help">勾选“数据查询”的方法，返回的表格数据会由办公助手直接画成图表：只勾选真正返回数据的方法，目录检索、口径检索不要勾选。历史方法 {{ legacyDataQueryWorkflow }} 默认就是数据查询。已安装的客户端在用户同步该知识库后采用修改。</p>
               <p v-if="invalidHistoricalNames.length" class="admin-error">历史工作流名称需要调整后才能作为新版客户端方法使用：{{ invalidHistoricalNames.join('、') }}。未修改的历史名称会保留。</p>
               <p v-if="conflictingAlias" class="admin-error">query_card_data 与 quer_card_data 的值不同，请核对；当前配置仅提供给新版客户端。</p>
               <div v-for="(row, index) in form.workflows" :key="row.id" class="workflow-row">
-                <label>名称（key）<input :ref="element => setWorkflowInput(row.id, element)" v-model="row.name" required :maxlength="maxWorkflowName" :aria-label="`工作流 ${index + 1} 名称（key）`" aria-describedby="knowledge-workflows-help" placeholder="例如：get_card_index" /></label>
-                <label>值（value）<input v-model="row.value" required :maxlength="maxWorkflowValue" :aria-label="`工作流 ${index + 1} 值（value）`" placeholder="填写工作流 ID" /></label>
+                <label>工作流名称<input :ref="element => setWorkflowInput(row.id, element)" v-model="row.name" required :maxlength="maxWorkflowName" :aria-label="`工作流 ${index + 1} 名称`" aria-describedby="knowledge-workflows-help" placeholder="例如：get_card_index" /></label>
+                <label>工作流ID<input v-model="row.value" required :maxlength="maxWorkflowValue" :aria-label="`工作流 ${index + 1} ID`" placeholder="填写工作流 ID" /></label>
                 <label class="check-label workflow-role"><input type="checkbox" :checked="row.dataQuery || isLegacyDataQuery(row)" :disabled="isLegacyDataQuery(row)" :aria-label="`工作流 ${index + 1}${row.name ? `：${row.name}` : ''} 标注为数据查询`" aria-describedby="knowledge-data-query-help" @change="row.dataQuery = ($event.target as HTMLInputElement).checked" />数据查询</label>
                 <button type="button" class="button secondary" :aria-label="`移除工作流 ${index + 1}${row.name ? `：${row.name}` : ''}`" @click="removeWorkflow(row.id)">移除</button>
               </div>

@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { parseDocument } from 'yaml'
 import {
   maxKnowledgeEntries, maxKnowledgeId, maxKnowledgeSkills, maxKnowledgeWorkflows, maxWorkflowName, maxWorkflowValue, maxSkillArchiveBytes, maxSkillArchiveEntries, maxSkillDescription,
-  maxSkillFileBytes, maxSkillFileName, maxSkillName, maxTypicalIndicators, metricKnowledgeIdPattern, skillNamePattern, validWorkflowName, legacyKnowledgeCompatible,
+  maxSkillFileBytes, maxSkillFileName, maxSkillName, maxTypicalIndicators, metricKnowledgeIdPattern, skillNamePattern, validWorkflowName, legacyKnowledgeEntries,
   type MetricKnowledgeCatalog, type MetricKnowledgeEntry, type MetricKnowledgeSkill,
 } from '../shared/knowledge.js'
 import { openContainedFile } from './files.js'
@@ -60,7 +60,7 @@ const DocumentSchema = z.object({ schemaVersion: z.literal(2), updatedAt: z.stri
     (new Set(item.data_query_workflows).size !== item.data_query_workflows.length ||
       item.data_query_workflows.some(name => !Object.hasOwn(item.knowledge_retrieve_workflow_id, name)))
   if (skillNames.size !== document.skills.length || new Set(document.items.map(item => item.id)).size !== document.items.length ||
-      new Set(document.items.map(item => item.tenant_id)).size !== document.items.length || document.items.some(item => (item.skill_name !== null && !skillNames.has(item.skill_name)) || item.pending_skill_names?.some(name => !skillNames.has(name))) ||
+      document.items.some(item => (item.skill_name !== null && !skillNames.has(item.skill_name)) || item.pending_skill_names?.some(name => !skillNames.has(name))) ||
       document.items.some(danglingDataQuery) ||
       (typeof document.legacy_skill_name === 'string' && !skillNames.has(document.legacy_skill_name))) {
     ctx.addIssue({ code: 'custom', message: 'Duplicate identity or invalid reference' })
@@ -355,7 +355,7 @@ export class KnowledgeStore {
     const skill = catalog.skills.find(skill => skill.name === catalog.legacy_skill_name)
     // Released clients get exactly the fields they were built for: no field added later reaches this response, so
     // its bytes and ETag depend only on what those clients can read.
-    const items = catalog.items.filter(item => item.enabled && legacyKnowledgeCompatible(item, catalog.legacy_skill_name)).map(({ skill_name: _skill, pending_skill_names: _pending, data_query_workflows: _dataQuery, ...item }) => {
+    const items = legacyKnowledgeEntries(catalog.items, catalog.legacy_skill_name).map(({ skill_name: _skill, pending_skill_names: _pending, data_query_workflows: _dataQuery, ...item }) => {
       const values = item.knowledge_retrieve_workflow_id
       return { ...item, knowledge_retrieve_workflow_id: { get_card_index: values.get_card_index!, get_card_meta: values.get_card_meta!, query_card_data: values.query_card_data!, quer_card_data: values.query_card_data! } }
     })
@@ -389,7 +389,6 @@ export class KnowledgeStore {
       let id = requested
       if (!id) do { id = `metrics-${randomBytes(5).toString('hex')}` } while (current.items.some(item => item.id === id))
       if (current.items.some(item => item.id === id)) return fail('KNOWLEDGE_ID_TAKEN', 409)
-      if (current.items.some(item => item.tenant_id === value.tenant_id)) return fail('TENANT_ID_TAKEN', 409)
       const skill_name = value.skill_name ?? null
       this.validateReferences(current, skill_name === null ? [] : [skill_name])
       this.validateWorkflowNames(value.knowledge_retrieve_workflow_id)
@@ -406,7 +405,6 @@ export class KnowledgeStore {
     if (value.id !== undefined && value.id !== id) return fail('INVALID_KNOWLEDGE')
     return this.change(expected, async current => {
       const previous = this.found(current, id)
-      if (current.items.some(item => item.id !== id && item.tenant_id === value.tenant_id)) return fail('TENANT_ID_TAKEN', 409)
       const { id: ignored, data_query_workflows: tags, ...rest } = value
       if (previous.pending_skill_names?.length && value.skill_name === undefined) return fail('SKILL_SELECTION_REQUIRED')
       const skill_name = value.skill_name === undefined ? previous.skill_name : value.skill_name

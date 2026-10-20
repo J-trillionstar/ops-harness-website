@@ -70,3 +70,13 @@ export function legacyKnowledgeCompatible(entry: Pick<MetricKnowledgeEntry, 'ski
     ['get_card_index', 'get_card_meta', 'query_card_data'].every(name => Boolean(workflows[name]?.trim())) &&
     (!Object.hasOwn(workflows, 'quer_card_data') || workflows.quer_card_data === workflows.query_card_data)
 }
+
+/** Released v1 clients require unique tenants. Preserve the first compatible, enabled entry in stored order. */
+export function legacyKnowledgeEntries<T extends Pick<MetricKnowledgeEntry, 'tenant_id' | 'enabled' | 'skill_name' | 'pending_skill_names' | 'knowledge_retrieve_workflow_id'>>(items: readonly T[], legacySkillName: string | null | undefined): T[] {
+  const tenants = new Set<string>()
+  return items.filter(item => {
+    if (!item.enabled || !legacyKnowledgeCompatible(item, legacySkillName) || tenants.has(item.tenant_id)) return false
+    tenants.add(item.tenant_id)
+    return true
+  })
+}

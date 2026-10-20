@@ -24,7 +24,7 @@ const messages: Record<string, string> = {
   BINARY_REQUIRED: '上传方式不正确，请重新选择文件后重试。',
   INVALID_KNOWLEDGE: '请检查知识库表单：租户名称、租户 ID、两个知识库 ID 与知识库描述为必填；工作流最多 50 项，名称和值均需填写，名称不能重复或使用保留名称，名称最多 80 字、值最多 256 字；只能引用技能库中已有的技能。标识须以 metrics- 开头且创建后不可修改；典型指标最多 50 个，每个 80 字以内。',
   KNOWLEDGE_NOT_FOUND: '知识库条目不存在或已被删除，请刷新列表。', KNOWLEDGE_ID_TAKEN: '该知识库标识已被占用，请换一个或留空由服务端生成。',
-  TENANT_ID_TAKEN: '该租户 ID 已被其他知识库使用，请核对后修改。', KNOWLEDGE_LIMIT: '知识库条目已达到 500 个上限，请先整理旧条目。',
+  KNOWLEDGE_LIMIT: '知识库条目已达到 500 个上限，请先整理旧条目。',
   INVALID_SKILL_FILE: '技能文件无效：只接受 .zip 或 .md，最多 5 MiB。ZIP 中须恰好有一个 SKILL.md，位于压缩包根目录或唯一的一级目录内，该目录名需与 frontmatter 的 name 一致；SKILL.md 需含小写连字符格式的 name 和非空 description。',
   SKILL_NOT_FOUND: '该技能不存在或已被移除，请刷新列表后重新选择。', KNOWLEDGE_SKILL_LIMIT: '技能库最多保存 100 个技能，请先移除不再使用的技能。',
   KNOWLEDGE_CATALOG_TOO_LARGE: '旧客户端目录超过 2 MiB，未保存本次修改。请精简描述、指标列表等元数据后重试。',
