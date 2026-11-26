@@ -224,7 +224,19 @@ GET /api/releases/check?installationId=123e4567-e89b-42d3-a456-426614174000&curr
       "id": "metrics-retail",
       "tenant_name": "示例零售",
       "tenant_id": "tenant-retail",
+      "serviceId": "service-retail",
       "knowledge_retrieve_workflow_id": { "get_card_index": "wf-card-index", "get_card_meta": "wf-card-meta", "query_card_data": "wf-card-data", "weekly_summary": "wf-report-summary" },
+      "workflow_options": {
+        "get_card_index": { "extraParams": [] },
+        "get_card_meta": { "extraParams": [] },
+        "query_card_data": {
+          "extraParams": [
+            { "name": "region", "type": "string", "value": "001" },
+            { "name": "filters", "type": "json", "value": "{\"active\": true}" }
+          ]
+        },
+        "weekly_summary": { "extraParams": [] }
+      },
       "skill_name": "metric-skill",
       "knowledge_id": { "card_index_knowledge_base": "kb-card-index", "card_meta_knowledge_base": "kb-card-meta" },
       "knowledge_base_meta": {
@@ -242,7 +254,13 @@ GET /api/releases/check?installationId=123e4567-e89b-42d3-a456-426614174000&curr
 }
 ```
 
-外层字段名沿用 snake_case。`knowledge_retrieve_workflow_id` 是名称到工作流 ID 的映射，允许空对象，最多 50 项；新增或改名的 key 必须匹配 `^[A-Za-z0-9_-]{1,64}$`，拒绝 `run_code`、`__proto__`、`constructor`、`prototype`；value 最多 256 字符。名称和值去除首尾空白后不能为空，名称不能重复。历史已存名称仍可读取和原名保存，管理页提示无效方法名，不自动改名。客户端以 key 注册方法，以 value 调用工作流。
+每个知识库可选填服务标识 `serviceId`，最多 256 个字符。保存后，v2 公开目录会为已配置的上架条目返回该字段。更新条目时，省略字段会保留已有值，传入空字符串可清除。
+
+管理接口和 v2 公开目录通过 `workflow_options[工作流名称].extraParams` 按填写顺序返回额外参数，未配置时返回 `[]`。每项包含参数名 `name`、客户端类型 `type`（`string` 或 `json`）和字符串 `value`。网站原样保存和返回 `value`，包括空字符串、首尾空白和换行。即使标为 `json`，也可以填写模板或任意文本，具体解释由客户端负责。
+
+每个工作流下方的「＋ 添加参数」可连续添加多项。参数名最长 80 个字符，同一工作流内名称唯一。更新接口按工作流替换 `extraParams`，传 `[]` 可清空该工作流的参数，省略其他工作流会保留它们的参数。
+
+`knowledge_retrieve_workflow_id` 是名称到工作流 ID 的映射，允许空对象，最多 50 项；新增或改名的 key 必须匹配 `^[A-Za-z0-9_-]{1,64}$`，拒绝 `run_code`、`__proto__`、`constructor`、`prototype`；value 最多 256 字符。名称和值去除首尾空白后不能为空，名称不能重复。历史已存名称仍可读取和原名保存，管理页提示无效方法名，不自动改名。客户端以 key 注册方法，以 value 调用工作流。
 
 `data_query_workflows` 是可选的字符串数组，列出被标注为“数据查询”的方法 key，表示该方法的结果是可以画成图表的数据；管理页每个工作流行有对应勾选。只接受同一条目 `knowledge_retrieve_workflow_id` 中存在且不重复的名称，保存时按工作流映射的顺序整理，为空则不出现该字段。新建省略视为没有标注；更新省略保留原标注（仅保留仍存在的方法，改名或移除方法时标注随之消失），显式 `[]` 清空。历史方法 `query_card_data` 不需要标注，客户端始终把它当作数据查询。该字段只在 v2 公开目录中输出，v1 投影显式剔除，旧客户端收到的字节与 ETag 不变；已安装的新客户端在用户同步该知识库后采用修改。
 
@@ -250,7 +268,7 @@ GET /api/releases/check?installationId=123e4567-e89b-42d3-a456-426614174000&curr
 
 原地址 `GET /api/knowledge/metrics` 始终返回 `schemaVersion: 1`，从同一份当前配置投影：只包含已上架、引用 `legacy_skill_name`（双方均无技能也允许）且三个固定工作流完整的知识库；新建且满足条件的库同样可见。每个条目移除单技能引用字段，仅保留 `get_card_index`、`get_card_meta`、`query_card_data` 并附同值 `quer_card_data` 别名；顶层 `skill` 为原公共技能的当前元数据。其他技能或自定义工作流库只供新版。迁移时旧拼写转为标准拼写，但两者同时存在且值不同时完整保留、管理页提示且不进入 v1；v2 不改写自定义 key。
 
-两种响应各自按实际表示生成 revision/ETag，互不复用 304。旧响应最多 2 MiB、新响应最多 96 MiB；写入前校验旧投影大小，超限返回 `KNOWLEDGE_CATALOG_TOO_LARGE` 且不改权威目录，不能截断旧库。修改名称、描述或原工作流 value 后两端看到同一份最新配置；下架或删除从两份公开目录移除，已绑定客户端仍遵循其原同步流程。
+两种响应各自按实际表示生成 revision/ETag，互不复用 304。旧响应最多 2 MiB，新响应最多 96 MiB。保存前会检查旧投影和磁盘目录的大小，超限返回 `KNOWLEDGE_CATALOG_TOO_LARGE`，保留上次保存的目录。修改名称、描述或原工作流 value 后两端看到同一份最新配置；下架或删除从两份公开目录移除，已绑定客户端仍遵循其原同步流程。
 
 `GET /api/knowledge/metrics/skill` 按 `legacy_skill_name` 下载当前公共技能，增加技能不影响该路径。按名称下载 `/api/knowledge/metrics/skills/:name` 继续可用。二者为 `no-store` + 内容哈希 ETag。新客户端使用 `/api/knowledge/metrics/v2/skills/:name/:sha256`，文件内容与名称双重校验，使用 `public, max-age=31536000, immutable`，同名替换后旧哈希仍可下载。所有下载带 `X-Skill-Name` 和 `X-Skill-Sha256`，未知名称或版本返回 404。旧无哈希地址保留既有跨请求上传竞态，客户端应继续校验并刷新重试，不为此冻结当前配置。
 

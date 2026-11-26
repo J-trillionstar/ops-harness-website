@@ -11,11 +11,14 @@ export async function safeDirectory(dir: string) {
   if (!info.isDirectory() || info.isSymbolicLink()) throw new GuideError('UNSAFE_CONTENT_PATH', 503)
 }
 export async function atomicJson(dir: string, name: string, value: unknown) {
+  return atomicText(dir, name, JSON.stringify(value, null, 2) + '\n')
+}
+export async function atomicText(dir: string, name: string, text: string) {
   await safeDirectory(dir)
   const temp = path.join(dir, `.${randomUUID()}.tmp`)
   const handle = await open(temp, 'wx', 0o600)
   try {
-    try { await handle.writeFile(JSON.stringify(value, null, 2) + '\n'); await handle.sync() } finally { await handle.close() }
+    try { await handle.writeFile(text); await handle.sync() } finally { await handle.close() }
     await rename(temp, path.join(dir, name))
   } finally { await unlink(temp).catch(e => { if (!missing(e)) throw e }) }
 }

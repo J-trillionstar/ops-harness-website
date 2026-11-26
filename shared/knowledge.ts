@@ -1,6 +1,8 @@
-// Shared JSON contract for the metric knowledge catalog. Field names use the snake_case spelling
-// agreed with the product repository. Workflow names and values are administrator-defined.
+// Shared JSON contract for the metric knowledge catalog. Workflow names and values are administrator-defined.
 export type MetricKnowledgeWorkflowIds = Record<string, string>
+/** The client uses type to interpret value. Both types carry the administrator's original text. */
+export type WorkflowParameter = { name: string; type: 'string' | 'json'; value: string }
+export type MetricKnowledgeWorkflowOptions = Record<string, { extraParams: WorkflowParameter[] }>
 export type MetricKnowledgeIds = { card_index_knowledge_base: string; card_meta_knowledge_base: string }
 export type MetricKnowledgeBaseMeta = {
   knowledge_description: string
@@ -14,7 +16,10 @@ export type MetricKnowledgeEntry = {
   id: string
   tenant_name: string
   tenant_id: string
+  serviceId?: string | undefined
   knowledge_retrieve_workflow_id: MetricKnowledgeWorkflowIds
+  /** Parameters for each workflow in admin and v2 responses, in the order configured by the administrator. */
+  workflow_options: MetricKnowledgeWorkflowOptions
   knowledge_id: MetricKnowledgeIds
   knowledge_base_meta: MetricKnowledgeBaseMeta
   enabled: boolean
@@ -32,11 +37,16 @@ export type MetricKnowledgeEntry = {
 }
 /** Skills are registered once and referenced by stable name from individual libraries. */
 export type MetricKnowledgeCatalog = { schemaVersion: 2; revision: string; updatedAt: string; skills: MetricKnowledgeSkill[]; items: MetricKnowledgeEntry[]; legacy_skill_name?: string | null | undefined }
-export type MetricKnowledgeInput = Omit<MetricKnowledgeEntry, 'id' | 'created_at' | 'updated_at' | 'skill_name' | 'pending_skill_names'> & { id?: string | undefined; skill_name?: string | null | undefined }
+export type MetricKnowledgeInput = Omit<MetricKnowledgeEntry, 'id' | 'created_at' | 'updated_at' | 'skill_name' | 'pending_skill_names' | 'workflow_options'> & {
+  id?: string | undefined
+  skill_name?: string | null | undefined
+  workflow_options?: MetricKnowledgeWorkflowOptions | undefined
+}
 
 export const metricKnowledgeIdPattern = /^metrics-[a-z0-9]+(?:-[a-z0-9]+)*$/
 export const skillNamePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 export const maxKnowledgeId = 64
+export const maxServiceId = 256
 export const maxSkillName = 64
 export const maxSkillDescription = 500
 export const maxKnowledgeEntries = 500

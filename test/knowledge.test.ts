@@ -14,7 +14,7 @@ import { KnowledgeStore } from '../server/knowledge-store.js'
 import { createAdminHandler } from '../server/admin-http.js'
 import { createGuideHandler } from '../server/guide-http.js'
 import { createHandler } from '../server/app.js'
-import { maxKnowledgeSkills, maxKnowledgeWorkflows, maxWorkflowName, maxWorkflowValue, maxSkillFileBytes, maxTypicalIndicators } from '../shared/knowledge.js'
+import { maxKnowledgeSkills, maxKnowledgeWorkflows, maxServiceId, maxWorkflowName, maxWorkflowValue, maxSkillFileBytes, maxTypicalIndicators } from '../shared/knowledge.js'
 
 // Minimal writer: local headers + central directory + EOCD, deflate only, no data descriptors.
 function archive(files: { name: string; data?: Buffer }[]) {
@@ -94,6 +94,9 @@ test('knowledge entries are created, edited and removed under revision control a
   assert.equal((await (await json('/api/admin/knowledge', { entry: entry({ id, tenant_id: 'tenant-other' }), revision: created.revision })).json()).error, 'KNOWLEDGE_ID_TAKEN')
   assert.equal((await (await json('/api/admin/knowledge', { entry: entry({ id: 'metrics-second' }), revision: created.revision })).json()).error, 'TENANT_ID_TAKEN')
   for (const invalid of [entry({ id: 'Metrics-Bad' }), entry({ id: 'wrong-prefix' }), entry({ tenant_name: '' }), entry({ enabled: 'yes' }),
+    entry({ serviceId: 123 }), entry({ serviceId: 's'.repeat(maxServiceId + 1) }),
+    entry({ workflow_options: { get_card_index: { isShared: 'false' } } }),
+    entry({ workflow_options: { get_card_index: {} } }),
     entry({ knowledge_base_meta: { knowledge_description: '描述', typical_indicators: Array.from({ length: maxTypicalIndicators + 1 }, (_, i) => `指标${i}`) } }),
     entry({ knowledge_retrieve_workflow_id: { '': 'value' } }), entry({ extra: true })]) {
     const rejected = await json('/api/admin/knowledge', { entry: invalid, revision: created.revision })
@@ -118,6 +121,26 @@ test('knowledge entries are created, edited and removed under revision control a
   assert.deepEqual((await read()).items, [])
 })
 
+test('serviceId persists per library, is published in v2, and can be cleared explicitly', async t => {
+  const { knowledge, content } = await fixture(t)
+  const first = await knowledge.create(entry({ serviceId: '  001-Retail  ' }), (await knowledge.list()).revision)
+  const second = await knowledge.create(entry({ tenant_id: 'tenant-other' }), first.revision)
+  const store = new KnowledgeStore(content)
+  const catalog = await store.publicListV2()
+  assert.equal(catalog.items[0]!.serviceId, '001-Retail')
+  assert.equal(Object.hasOwn(catalog.items[1]!, 'serviceId'), false)
+  assert.equal(Object.hasOwn((await store.publicList()).items[0]!, 'serviceId'), false)
+
+  const id = first.entry.id
+  const preserved = await store.update(id, entry({ tenant_name: '新版租户名称' }), second.revision)
+  assert.equal(preserved.entry.serviceId, '001-Retail')
+  const changed = await store.update(id, entry({ serviceId: '002-Retail' }), preserved.revision)
+  assert.equal(changed.entry.serviceId, '002-Retail')
+  const cleared = await store.update(id, entry({ serviceId: '   ' }), changed.revision)
+  assert.equal(Object.hasOwn(cleared.entry, 'serviceId'), false)
+  assert.equal(Object.hasOwn((await knowledge.publicListV2()).items[0]!, 'serviceId'), false)
+})
+
 test('the public catalog omits withdrawn entries, answers If-None-Match and never lists admin-only state', async t => {
   const { json, read, origin } = await fixture(t)
   const base = await read()
@@ -140,6 +163,93 @@ test('the public catalog omits withdrawn entries, answers If-None-Match and neve
   assert.equal((await fetch(origin + '/api/knowledge/metrics', { headers: { 'If-None-Match': '"other"' } })).status, 200)
   assert.equal((await fetch(origin + '/api/knowledge/metrics', { method: 'POST' })).status, 405)
   assert.equal((await fetch(origin + '/api/knowledge/metrics/metrics-retail')).status, 404)
+})
+
+test('workflow parameters preserve raw text and client type in admin and v2', async t => {
+  const { json, read, origin, content } = await fixture(t)
+  const route = '/api/admin/knowledge'
+  const params = [
+    { name: ' region ', type: 'string', value: ' 001 ' },
+    { name: 'filter', type: 'json', value: '  {\r\n    "ids": [1, 2]\r\n}  ' },
+    { name: 'template', type: 'json', value: '  {{筛选条件}}\n' },
+    { name: 'blank', type: 'json', value: '' },
+    { name: 'empty', type: 'string', value: '' },
+    { name: 'literal', type: 'string', value: '{"active":true}' },
+  ]
+  const initial = {
+    get_card_index: { extraParams: [] },
+    get_card_meta: { extraParams: params.map(param => ({ ...param, name: param.name.trim() })) },
+    query_card_data: { extraParams: [{ name: 'region', type: 'json', value: 'false' }] },
+  }
+  const created = await (await json(route, {
+    revision: (await read()).revision, entry: entry({
+      workflow_options: { get_card_meta: { extraParams: params }, query_card_data: initial.query_card_data },
+      data_query_workflows: ['query_card_data'], serviceId: 'service-retail',
+    }),
+  })).json()
+  assert.deepEqual(created.entry.workflow_options, initial)
+  assert.deepEqual((await read()).items[0].workflow_options, initial)
+  assert.deepEqual((await new KnowledgeStore(content).list()).items[0]!.workflow_options, initial)
+  const published = await fetch(origin + '/api/knowledge/metrics/v2')
+  const publishedItem = (await published.json()).items[0]
+  assert.deepEqual(publishedItem.workflow_options, initial)
+  assert.deepEqual(publishedItem.data_query_workflows, ['query_card_data'])
+  assert.equal(publishedItem.serviceId, 'service-retail')
+  assert.equal(Object.hasOwn((await (await fetch(origin + '/api/knowledge/metrics')).json()).items[0], 'workflow_options'), false)
+
+  const update = (fields: Record<string, unknown>, revision: string) =>
+    json(`${route}/${created.entry.id}`, { revision, entry: entry(fields) }, 'PUT')
+  const invalid = await update({ workflow_options: { missing_method: { extraParams: [] } } }, created.revision)
+  assert.equal(invalid.status, 400)
+  assert.equal((await invalid.json()).error, 'INVALID_WORKFLOW_OPTIONS')
+
+  // A client can clear one workflow without resending the parameters of the other workflows.
+  const cleared = await (await update({ workflow_options: { query_card_data: { extraParams: [] } } }, created.revision)).json()
+  assert.deepEqual(cleared.entry.workflow_options, { ...initial, query_card_data: { extraParams: [] } })
+  const legacyEdit = await (await update({ workflow_options: { get_card_meta: { isShared: true } } }, cleared.revision)).json()
+  assert.deepEqual(legacyEdit.entry.workflow_options, cleared.entry.workflow_options)
+  const workflows = { get_card_meta: 'wf-card-meta', weekly_summary: 'wf-summary' }
+  const edited = await (await update({ knowledge_retrieve_workflow_id: workflows }, legacyEdit.revision)).json()
+  const remaining = { get_card_meta: initial.get_card_meta, weekly_summary: { extraParams: [] } }
+  assert.deepEqual(edited.entry.workflow_options, remaining)
+  const refreshed = await fetch(origin + '/api/knowledge/metrics/v2', { headers: { 'If-None-Match': published.headers.get('etag')! } })
+  assert.equal(refreshed.status, 200)
+  assert.deepEqual((await refreshed.json()).items[0].workflow_options, remaining)
+})
+
+test('invalid parameter definitions are rejected without changing the library', async t => {
+  const { knowledge } = await fixture(t)
+  const created = await knowledge.create(entry(), (await knowledge.list()).revision)
+  const param = { name: 'region', type: 'string', value: '001' }
+  for (const extraParams of [
+    [{ ...param, name: '  ' }], [param, { ...param, name: ' region' }],
+    [{ ...param, value: false }], [{ ...param, type: 'number' }], [{ name: 'region', type: 'json' }],
+    [{ ...param, type: 'json', value: { limit: 10 } }], [{ ...param, type: 'json', value: null }],
+  ]) {
+    await assert.rejects(knowledge.update(created.entry.id, entry({ workflow_options: { get_card_meta: { extraParams } } }), created.revision),
+      { code: 'INVALID_KNOWLEDGE', status: 400 })
+  }
+  assert.equal((await knowledge.list()).revision, created.revision)
+})
+
+test('catalogs with missing options or a former sharing flag load with empty parameter lists', async t => {
+  const { knowledge, content } = await fixture(t)
+  const created = await knowledge.create(entry(), (await knowledge.list()).revision)
+  const file = path.join(content, 'knowledge/catalog.json')
+  const stored = JSON.parse(await readFile(file, 'utf8'))
+  const expected = { get_card_index: { extraParams: [] }, get_card_meta: { extraParams: [] }, query_card_data: { extraParams: [] } }
+  for (const options of [undefined, { get_card_meta: { isShared: true }, query_card_data: { isShared: false } }]) {
+    stored.items[0].workflow_options = options
+    const original = JSON.stringify(stored)
+    await writeFile(file, original)
+    const store = new KnowledgeStore(content)
+    const catalog = await store.list()
+    assert.deepEqual(catalog.items[0]!.workflow_options, expected)
+    assert.deepEqual((await store.publicListV2()).items[0]!.workflow_options, expected)
+    assert.equal(await readFile(file, 'utf8'), original)
+    await store.update(created.entry.id, entry({ tenant_name: '更名' }), catalog.revision)
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')).items[0].workflow_options, expected)
+  }
 })
 
 test('multiple skills are registered, referenced by library and replaced by stable name without losing references', async t => {
@@ -523,7 +633,7 @@ test('a write exceeding the old 2 MiB response ceiling is rejected before changi
   const fullMeta = { knowledge_description: '描'.repeat(2000), typical_indicators: Array.from({ length: 50 }, () => '指'.repeat(80)) }
   const seed = { ...raw.items[0], knowledge_base_meta: fullMeta }
   raw.items = []
-  const projection = (items: typeof raw.items) => ({ schemaVersion: 1, updatedAt: raw.updatedAt, revision: 'a'.repeat(64), items: items.map(({ skill_name: _skill, ...item }: any) => ({ ...item, knowledge_retrieve_workflow_id: { ...item.knowledge_retrieve_workflow_id, quer_card_data: item.knowledge_retrieve_workflow_id.query_card_data } })) })
+  const projection = (items: typeof raw.items) => ({ schemaVersion: 1, updatedAt: raw.updatedAt, revision: 'a'.repeat(64), items: items.map(({ skill_name: _skill, workflow_options: _options, ...item }: any) => ({ ...item, knowledge_retrieve_workflow_id: { ...item.knowledge_retrieve_workflow_id, quer_card_data: item.knowledge_retrieve_workflow_id.query_card_data } })) })
   for (let index = 0; index < 500; index++) {
     const candidate = [...raw.items, { ...seed, id: `metrics-${index}`, tenant_id: `tenant-${index}` }]
     if (Buffer.byteLength(JSON.stringify(projection(candidate))) > 2 * 1024 ** 2) break
